@@ -3,26 +3,19 @@ from __future__ import print_function
 
 import sys
 from collections import namedtuple
+import re
+import math
+from operator import itemgetter
 
 import pyspark
 import pyspark.sql
 from pyspark.sql import SparkSession
-from operator import itemgetter
+import pyspark.sql.functions as F
 
-import re
-# pattern = re.compile(".*")
-# candle_width = 300000
-# date_start_begin = 19000101
-# date_start_end =  20200101
-# candle_start_begin =  1000
-# candle_start_end =  1800
+import argparse
+def list_str(values):
+    return tuple(map(int, values.split(',')))
 
-pattern = re.compile(".*")
-candle_width = 300000
-date_start_begin = 19000101
-date_start_end =  20200101
-candle_start_begin =  1000
-candle_start_end =  2000
 
 
 Value = namedtuple('Value', ['price', 'close_time', 'close_id'])
@@ -108,7 +101,6 @@ def map_pairs(x):
 
     return key, value
 
-import math
 
 def average(x):
     assert len(x) > 0
@@ -129,6 +121,8 @@ def pearson_def(x, y):
         diffprod += xdiff * ydiff
         xdiff2 += xdiff * xdiff
         ydiff2 += ydiff * ydiff
+    if xdiff2 == 0 or ydiff2 == 0:
+        return None
 
     return diffprod / math.sqrt(xdiff2 * ydiff2)
 
@@ -147,10 +141,37 @@ def map_diff(x):
         res = pearson_def(diffs1, diffs2)
     return key, res
 
+
+
+
+
+
 if __name__=="__main__":
-    if len(sys.argv) != 2:
-        print("Usage: <file>", file=sys.stderr)
-        sys.exit(-1)
+    parser = argparse.ArgumentParser()
+    parser.add_argument('--securities', type=str, default=".*")
+    parser.add_argument('--date_from', type=int, default=19000101)
+    parser.add_argument('--date_to', type=int, default=20200101)
+    parser.add_argument('--time_from', type=int, default=1000)
+    parser.add_argument('--time_to', type=int, default=2000)
+    parser.add_argument('--widths', type=list_str, default="300000")
+    parser.add_argument('--shifts', type=list_str, default="0")
+    parser.add_argument('--num_reducers', type=int, default=1)
+    parser.add_argument('input', type=str)
+    parser.add_argument('output', type=str)
+    args = parser.parse_args()
+
+    pattern = re.compile(args.securities)
+    date_start_begin = args.date_from
+    date_start_end = args.date_to
+    candle_start_begin = args.time_from
+    candle_start_end = args.time_to
+    candle_width = args.widths[0]
+    shift = args.shifts[0]
+    num_reducers = args.num_reducers
+
+    fi = args.input
+    fo = args.output
+
 
     spark = SparkSession.builder\
         .appName("PythonCandle")\
@@ -158,7 +179,7 @@ if __name__=="__main__":
 
     spark.sparkContext.setLogLevel('ERROR')
 
-    text = spark.read.text(sys.argv[1])
+    text = spark.read.text(fi)
     header = text.first()
     rdd = text.rdd
     lines = rdd.map(lambda r: r[0])
@@ -174,8 +195,20 @@ if __name__=="__main__":
     pairs = out_df.join(out_df, ["MOMENT"], 'inner')
     pairs = pairs.sort("MOMENT")
 
-    res = pairs.rdd.map(map_pairs).groupByKey().map(map_diff).toDF().na.drop()
+    res = pairs.rdd.map(map_pairs).groupByKey().map(map_diff).flatMap(lambda x:  ((x[0][0], x[0][1], ) + x[1:], ))
+    res = res.toDF(["sym1", "sym2", "p_corr"]).na.drop()
+
+    res = res.withColumn('abs_corr', F.abs(res.p_corr))
+    res = res.sort('abs_corr', ascending=False)
+    res = res.drop('abs_corr')
+
+    res = res.withColumn('width', F.lit(candle_width))
+    res = res.withColumn('shift', F.lit(shift))
+    res = res.select('sym1', 'sym2', 'width', 'shift', 'p_corr')
+
     res.show()
+    res.write.parquet(fo)
+    res.write.format("csv").save("csv_out")
 
 #    output = counts.collect()
     
