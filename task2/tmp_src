@@ -1,0 +1,59 @@
+
+def reduce_f(arg1, arg2):
+    if arg2 is None:
+        return
+
+    val1, val2 = arg2
+
+    min_price = float("inf")
+    max_price = float("-inf")
+    open_price = -1.0
+    close_price = -1.0
+
+    MAX_VALUE = 9.223372e+18
+    open_time = MAX_VALUE
+    close_time = -MAX_VALUE
+    open_id = MAX_VALUE
+    close_id = -MAX_VALUE
+
+    for val in  values:
+        print("LELEL", val)
+        min_price = min(min_price, val.min_price)
+        max_price = max(max_price, val.max_price)
+
+        if val.open_time < open_time or (val.open_time == open_time and val.open_id < open_id): 
+            open_time = val.open_time
+            open_price = val.open_price
+            open_id = val.open_id
+
+      
+        if val.close_time > close_time or (val.close_time == close_time and val.close_id > close_id): 
+            close_time = val.close_time
+            close_price = val.close_price
+            close_id = val.close_id
+
+    res = Value(min_price, max_price, open_price, close_price, open_time, close_time, -1, -1)
+    return res
+
+
+
+    pairs = out_df.join(out_df, ["MOMENT"], 'inner').withColumnRenamed(["MOMENT", "SYMBOL",    "CLOSE_PRICE", "SYMBOL", "CLOSE_PRICE"], ["MOMENT", "SYMBOL_1", "CLOSE_PRICE_1",    "SYMBOL_2",    "CLOSE_PRICE_2"])
+
+
+
+class Key:
+    def __init__(self, symbol, candle_start, candle_moment):
+        self.symbol = symbol
+        self.candle_start = candle_start
+        self.candle_moment = candle_moment
+
+class Value:
+    def __init__(self, min_price, max_price, open_price, close_price, open_time, close_time, open_id, close_id):
+        self.min_price = min_price
+        self.max_price = max_price
+        self.open_price = open_price
+        self.close_price = close_price
+        self.open_time = open_time
+        self.close_time = close_time
+        self.open_id = open_id
+        self.close_id = close_id
