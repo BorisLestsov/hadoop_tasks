@@ -11,6 +11,7 @@ import pyspark
 import pyspark.sql
 from pyspark.sql import SparkSession
 import pyspark.sql.functions as F
+import pyspark.sql.types as T
 
 import argparse
 def list_str(values):
@@ -58,7 +59,7 @@ def map_f(line):
     mm = (candle_start - hh*60*60*1000)/1000/60
     ss = (candle_start - hh*60*60*1000 - mm*60*1000)/1000
     fff = (candle_start - hh*60*60*1000 - mm*60*1000 - ss*1000)
-    candle_moment = int('{}{:.2g}{:.2g}{:.2g}{:03g}'.format(yyyymmdd, hh, mm, ss, fff))
+    candle_moment = int('{}{:02g}{:02g}{:02g}{:03g}'.format(yyyymmdd, hh, mm, ss, fff))
 
     key_out = (symbol, candle_moment)
     
@@ -131,7 +132,7 @@ def map_diff(x):
     if key.s1 >= key.s2:
         return key, None
     val = list(val)
-    val.sort(key=itemgetter(0))
+    #val.sort(key=itemgetter(0))
     diffs1 = tuple( (val[i+1][1]-val[i][1])/val[i][1] for i in xrange(len(val)-1))
     diffs2 = tuple( (val[i+1][2]-val[i][2])/val[i][2] for i in xrange(len(val)-1))
 
@@ -139,6 +140,7 @@ def map_diff(x):
         res = None
     else:
         res = pearson_def(diffs1, diffs2)
+        #res = float(len(diffs1))
     return key, res
 
 
@@ -153,7 +155,7 @@ if __name__=="__main__":
     parser.add_argument('--date_to', type=int, default=20200101)
     parser.add_argument('--time_from', type=int, default=1000)
     parser.add_argument('--time_to', type=int, default=2000)
-    parser.add_argument('--widths', type=list_str, default="300000")
+    parser.add_argument('--widths', type=list_str, default="30")
     parser.add_argument('--shifts', type=list_str, default="0")
     parser.add_argument('--num_reducers', type=int, default=1)
     parser.add_argument('input', type=str)
@@ -165,7 +167,7 @@ if __name__=="__main__":
     date_start_end = args.date_to
     candle_start_begin = args.time_from
     candle_start_end = args.time_to
-    candle_width = args.widths[0]
+    candle_width = args.widths[0] * 1000
     shift = args.shifts[0]
     num_reducers = args.num_reducers
 
@@ -178,6 +180,7 @@ if __name__=="__main__":
         .getOrCreate()
 
     spark.sparkContext.setLogLevel('ERROR')
+    sql_context = pyspark.sql.SQLContext(spark.sparkContext)
 
     text = spark.read.text(fi)
     header = text.first()
@@ -192,11 +195,25 @@ if __name__=="__main__":
     out_df = counts.flatMap(lambda x:  ((x[0][0], x[0][1], x[1].price), ))
     out_df = out_df.toDF(["SYMBOL", "MOMENT", "CLOSE_PRICE"])
 
+    if False:
+        tmp_df = out_df.sort("MOMENT", ascending=True)
+        tmp_df.rdd.map(lambda x: ",".join(map(str, x))).coalesce(1).saveAsTextFile("file.csv")
+        tmp_df.collect()
+        tmp_df.write.format("csv").save("out_dbg")
+        # spark.stop()
+        # sys.exit()
+
     pairs = out_df.join(out_df, ["MOMENT"], 'inner')
     pairs = pairs.sort("MOMENT")
 
     res = pairs.rdd.map(map_pairs).groupByKey().map(map_diff).flatMap(lambda x:  ((x[0][0], x[0][1], ) + x[1:], ))
-    res = res.toDF(["sym1", "sym2", "p_corr"]).na.drop()
+    #res = res.toDF(["sym1", "sym2", "p_corr"]).na.drop()
+    schema = T.StructType([
+        T.StructField("sym1", T.StringType(), True),
+        T.StructField("sym2", T.StringType(), True),
+        T.StructField("p_corr", T.FloatType(), True),
+        ])
+    res = sql_context.createDataFrame(res, schema=schema).na.drop()
 
     res = res.withColumn('abs_corr', F.abs(res.p_corr))
     res = res.sort('abs_corr', ascending=False)
@@ -206,9 +223,11 @@ if __name__=="__main__":
     res = res.withColumn('shift', F.lit(shift))
     res = res.select('sym1', 'sym2', 'width', 'shift', 'p_corr')
 
-    res.show()
-    res.write.parquet(fo)
-    res.write.format("csv").save("csv_out")
+    res.filter((res.sym1=="SPZ1") & (res.sym2=="SRZ1")).show()
+
+    #res.show()
+    res.rdd.map(lambda x: " ".join(map(str, x))).coalesce(1).saveAsTextFile(fo)
+    res.write.parquet("parquet_result")
 
 #    output = counts.collect()
     
