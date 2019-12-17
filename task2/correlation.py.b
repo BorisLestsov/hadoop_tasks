@@ -6,7 +6,6 @@ from collections import namedtuple
 import re
 import math
 from operator import itemgetter
-import copy
 
 import pyspark
 import pyspark.sql
@@ -23,7 +22,7 @@ def list_str(values):
 Value = namedtuple('Value', ['price', 'close_time', 'close_id'])
 
 # TODO: should not be shift ???
-PairS = namedtuple('PairS', ["s1", "s2", "width", "shift"])
+PairS = namedtuple('PairS', ["s1", "s2", "width"])
 PairP = namedtuple('PairP', ["moment", "p1", "p2"])
 
 def parse_csv(line):
@@ -40,7 +39,7 @@ def parse_csv(line):
 
 
 def map_f(line):
-    symbol, moment, moment_id, price, candle_width= line
+    symbol, moment, moment_id, price, candle_width, shift = line
 
     hhmm = int(moment[8:8+4])
     yyyymmdd = int(moment[0:0+8])
@@ -60,14 +59,14 @@ def map_f(line):
                  int(moment[12:12+2])*1000 + \
                  int(moment[14:14+3])
 
-    candle_start = (moment_mil / candle_width) * candle_width 
+    candle_start = (moment_mil / candle_width) * candle_width + candle_width*shift
     hh = candle_start/1000/60/60
     mm = (candle_start - hh*60*60*1000)/1000/60
     ss = (candle_start - hh*60*60*1000 - mm*60*1000)/1000
     fff = (candle_start - hh*60*60*1000 - mm*60*1000 - ss*1000)
     candle_moment = int('{}{:02g}{:02g}{:02g}{:03g}'.format(yyyymmdd, hh, mm, ss, fff))
 
-    key_out = (symbol, candle_moment, candle_width)
+    key_out = (symbol, candle_moment, candle_width, shift)
     value_out = Value(price, moment_long, moment_id)
 
     return key_out, value_out
@@ -98,9 +97,9 @@ def reduce_f(val1, val2):
     return Value(close_price, close_time, close_id)
 
 def map_pairs(x):
-    s1, m1, w1, p1, s2, m2, w2, p2, sh = x
-    key = PairS(s1, s2, w1, sh)
-    value = PairP(m1, p1, p2)
+    moment, width, shift, s1, p1, s2, p2 = x
+    key = PairS(s1, s2, width)
+    value = PairP(moment, p1, p2)
 
     return key, value
 
@@ -185,67 +184,50 @@ if __name__=="__main__":
     text = spark.read.text(fi)
     header = text.first()
     field_map = {v: k for k, v in enumerate(header.value[1:].split(','))}
-    data = text.rdd.map(parse_csv).filter(lambda x: x[0] is not None)
+    df_start = text.rdd.map(parse_csv).filter(lambda x: x[0] is not None)
 
-    w_df = spark.createDataFrame(candle_widths, T.IntegerType())
-    data = data.cartesian(w_df.rdd)
-    data = data.map(lambda x:  (x[0][0], x[0][1], x[0][2], x[0][3], x[1].value))
+    params_schema = T.StructType([T.StructField("widths", T.IntegerType(), True), \
+                                  T.StructField("shifts", T.IntegerType(), True)])
+    params_list=[]
+    for w in candle_widths:
+        for s in shifts:
+            if s != 0:
+                params_list.append((w, s))
+                params_list.append((w, -s))
+            else:
+                params_list.append((w, s))
 
-    data = data.map(map_f).reduceByKey(reduce_f)
-    data = data.flatMap(lambda x:  ((x[0][0], x[0][1], x[0][2], x[1].price), ))
-    data = data.toDF(["SYMBOL", "MOMENT", "WIDTH", "CLOSE_PRICE"])
-    data.show()
+    params_df = spark.createDataFrame(params_list,schema=params_schema) 
+    counts = df_start.cartesian(params_df.rdd).map(lambda x: x[0]+x[1])
+    #counts.toDF(["symbol", "moment", "moment_id", "price", "width", "shift"]).show()
+    counts = counts.map(map_f).reduceByKey(reduce_f)
+    #out_df = counts.flatMap(lambda x:  (x[0][0], x[0][1], x[1].price, x[1].close_time, x[1].close_id))
+    out_df = counts.flatMap(lambda x:  ((x[0][0], x[0][1], x[0][2], x[0][3], x[1].price), ))
+    out_df = out_df.toDF(["SYMBOL", "MOMENT", "WIDTH", "SHIFT", "CLOSE_PRICE"])
+    out_df.show()
 
+    if False:
+        tmp_df = out_df.sort("MOMENT", ascending=True)
+        tmp_df.rdd.map(lambda x: ",".join(map(str, x))).coalesce(1).saveAsTextFile("file.csv")
+        tmp_df.collect()
+        tmp_df.write.format("csv").save("out_dbg")
+        # spark.stop()
+        # sys.exit()
 
+    pairs = out_df.join(out_df, ["MOMENT", "WIDTH", "SHIFT"], 'inner')
+    pairs = pairs.sort("MOMENT")
+    pairs.show()
 
-    data1 = data.toDF("SYMBOL1", "MOMENT1", "WIDTH1", "CLOSE_PRICE1")
-    data2 = data.toDF("SYMBOL2", "MOMENT2", "WIDTH2", "CLOSE_PRICE2")
-
-    pairs = []
-    for s in shifts:
-        if s == 0:
-            pairs += (s, )
-        else:
-            pairs += (s, -s)
-
-    s_df = spark.createDataFrame(pairs, T.IntegerType())
-    s_df.show()
-    data2 = data2.crossJoin(s_df)
-    data2.show()
-
-    data2 = data2.withColumn('MOMENT2', F.col("MOMENT2") + F.col("WIDTH2")*F.col("value"))
-
-    print("data1")
-    data1.show()
-    print("data2")
-    data2.show()
-
-
-    data = data1.join(
-        data2, 
-        (F.col("WIDTH1") == F.col("WIDTH2")) & (F.col("MOMENT1") == F.col("MOMENT2")),
-        'outer'
-    )
-    data = data.filter(data.SYMBOL1 < data.SYMBOL2)
-    data.show()
-
-
-    data = data.sort("MOMENT1")
-    data.show()
-
-    data = data.rdd.map(map_pairs)
-    data = data.groupByKey().map(map_diff)
-    data = data.flatMap(lambda x: ( (x[0].s1, x[0].s2, x[0].width, x[0].shift, x[1]), ) )
-    print(data.first())
+    res = pairs.rdd.map(map_pairs).groupByKey().map(map_diff).flatMap(lambda x:  ((x[0].s1, x[0].s2, x[0].width) + x[1:], ))
     #res = res.toDF(["sym1", "sym2", "p_corr"]).na.drop()
     schema = T.StructType([
         T.StructField("sym1", T.StringType(), True),
         T.StructField("sym2", T.StringType(), True),
         T.StructField("width", T.IntegerType(), True),
-        T.StructField("shift", T.IntegerType(), True),
+        #T.StructField("shift", T.IntegerType(), True),
         T.StructField("p_corr", T.FloatType(), True),
         ])
-    res = spark.createDataFrame(data, schema=schema).na.drop()
+    res = spark.createDataFrame(res, schema=schema).na.drop()
 
     res = res.withColumn('abs_corr', F.abs(res.p_corr))
     res = res.sort('abs_corr', ascending=False)
