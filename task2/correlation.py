@@ -40,20 +40,12 @@ def parse_csv(line):
 
 
 def map_f(line):
+
     symbol, moment, moment_id, price, candle_width= line
+    moment_long = int(moment)
 
     hhmm = int(moment[8:8+4])
     yyyymmdd = int(moment[0:0+8])
-
-
-    # rotate out
-    if yyyymmdd < date_start_begin or yyyymmdd >= date_start_end:
-        return None, None
-
-    if hhmm < candle_start_begin or hhmm >= candle_start_end:
-        return None, None
-
-    moment_long = int(moment)
 
     moment_mil = int(moment[8:8+2])*60*60*1000 + \
                  int(moment[10:10+2])*60*1000 + \
@@ -67,11 +59,12 @@ def map_f(line):
     fff = (candle_start - hh*60*60*1000 - mm*60*1000 - ss*1000)
     candle_moment = int('{}{:02g}{:02g}{:02g}{:03g}'.format(yyyymmdd, hh, mm, ss, fff))
 
-    key_out = (symbol, candle_moment, candle_width)
+    candle_start_out = 1e9*yyyymmdd + candle_start
+
+    key_out = (symbol, candle_start_out, candle_width)
     value_out = Value(price, moment_long, moment_id)
 
     return key_out, value_out
-
 
 def reduce_f(val1, val2):
     if val1 is None or val2 is None:
@@ -96,6 +89,19 @@ def reduce_f(val1, val2):
             close_id = val2.close_id
 
     return Value(close_price, close_time, close_id)
+
+
+def filter_out(x):
+    moment = x[1]
+    yyyymmdd = moment // 1e9
+    hhmm_mil = moment - yyyymmdd*1e9
+
+    # rotate out
+    if yyyymmdd < date_start_begin or yyyymmdd >= date_start_end:
+        return False
+    if hhmm_mil < candle_start_begin_mil or hhmm_mil >= candle_start_end_mil:
+        return False
+    return True
 
 def map_pairs(x):
     s1, m1, w1, p1, s2, m2, w2, p2, sh = x
@@ -139,9 +145,9 @@ def map_diff(x):
     diffs2 = tuple( (val[i+1][2]-val[i][2])/val[i][2] for i in xrange(len(val)-1))
 
     if len(diffs1) <= 1:
-        res = None
+        res = (None, None)
     else:
-        res = pearson_def(diffs1, diffs2)
+        res = (pearson_def(diffs1, diffs2), len(diffs1))
         #res = float(len(diffs1))
     return key, res
 
@@ -153,12 +159,12 @@ def map_diff(x):
 if __name__=="__main__":
     parser = argparse.ArgumentParser()
     parser.add_argument('--securities', type=str, default=".*")
-    parser.add_argument('--date_from', type=int, default=19000101)
-    parser.add_argument('--date_to', type=int, default=20200101)
+    parser.add_argument('--date_from', type=int, default=20111201)
+    parser.add_argument('--date_to', type=int, default=20111202)
     parser.add_argument('--time_from', type=int, default=1000)
-    parser.add_argument('--time_to', type=int, default=2000)
-    parser.add_argument('--widths', type=list_str, default="30")
-    parser.add_argument('--shifts', type=list_str, default="0")
+    parser.add_argument('--time_to', type=int, default=1015)
+    parser.add_argument('--widths', type=list_str, default="5,10")
+    parser.add_argument('--shifts', type=list_str, default="0,1,2")
     parser.add_argument('--num_reducers', type=int, default=1)
     parser.add_argument('input', type=str)
     parser.add_argument('output', type=str)
@@ -175,8 +181,24 @@ if __name__=="__main__":
     fi = args.input
     fo = args.output
 
+    moment = "0"*8+str(candle_start_begin)+"0"*3
+    candle_start_begin_mil = int(moment[8:8+2])*60*60*1000 + \
+                             int(moment[10:10+2])*60*1000 + \
+                             int(moment[12:12+2])*1000 + \
+                             int(moment[14:14+3])
+
+    moment = "0"*8+str(candle_start_end)+"0"*3
+    candle_start_end_mil = int(moment[8:8+2])*60*60*1000 + \
+                           int(moment[10:10+2])*60*1000 + \
+                           int(moment[12:12+2])*1000 + \
+                           int(moment[14:14+3])
+
     spark = SparkSession.builder\
         .appName("PythonCandle")\
+        .config("spark.default.parallelism", num_reducers)\
+        .config("mapred.min.split.size", num_reducers)\
+        .config("mapred.max.split.size", num_reducers)\
+        .config("spark.sql.shuffle.partitions", num_reducers)\
         .getOrCreate()
 
     spark.sparkContext.setLogLevel('ERROR')
@@ -194,7 +216,7 @@ if __name__=="__main__":
     data = data.map(map_f).reduceByKey(reduce_f)
     data = data.flatMap(lambda x:  ((x[0][0], x[0][1], x[0][2], x[1].price), ))
     data = data.toDF(["SYMBOL", "MOMENT", "WIDTH", "CLOSE_PRICE"])
-    data.show()
+#     data.show()
 
 
 
@@ -209,34 +231,38 @@ if __name__=="__main__":
             pairs += (s, -s)
 
     s_df = spark.createDataFrame(pairs, T.IntegerType())
-    s_df.show()
+#     s_df.show()
     data2 = data2.crossJoin(s_df)
-    data2.show()
+#     data2.show()
 
     data2 = data2.withColumn('MOMENT2', F.col("MOMENT2") + F.col("WIDTH2")*F.col("value"))
 
-    print("data1")
-    data1.show()
-    print("data2")
-    data2.show()
+#     print("data1")
+#     data1.show()
+#     print("data2")
+#     data2.show()
+
+    #print(data1.first())
+    data1 = data1.rdd.filter(filter_out).toDF()
+    data2 = data2.rdd.filter(filter_out).toDF()
 
 
     data = data1.join(
         data2, 
         (F.col("WIDTH1") == F.col("WIDTH2")) & (F.col("MOMENT1") == F.col("MOMENT2")),
-        'outer'
+        'inner'
     )
     data = data.filter(data.SYMBOL1 < data.SYMBOL2)
-    data.show()
+#     data.show()
 
 
     data = data.sort("MOMENT1")
-    data.show()
+#     data.show()
+
 
     data = data.rdd.map(map_pairs)
     data = data.groupByKey().map(map_diff)
-    data = data.flatMap(lambda x: ( (x[0].s1, x[0].s2, x[0].width, x[0].shift, x[1]), ) )
-    print(data.first())
+    data = data.flatMap(lambda x: ( (x[0].s1, x[0].s2, x[0].width, x[0].shift, x[1][0]),) ) #, x[1][1]), ) )
     #res = res.toDF(["sym1", "sym2", "p_corr"]).na.drop()
     schema = T.StructType([
         T.StructField("sym1", T.StringType(), True),
@@ -244,11 +270,14 @@ if __name__=="__main__":
         T.StructField("width", T.IntegerType(), True),
         T.StructField("shift", T.IntegerType(), True),
         T.StructField("p_corr", T.FloatType(), True),
+        # T.StructField("len", T.IntegerType(), True),
         ])
     res = spark.createDataFrame(data, schema=schema).na.drop()
 
     res = res.withColumn('abs_corr', F.abs(res.p_corr))
-    res = res.sort('abs_corr', ascending=False)
+    res = res.withColumn('shift', F.abs(res.shift))
+    res = res.withColumn('width', F.round(F.abs(res.width)/1e3).cast("int"))
+    res = res.sort(['sym1', 'width', 'shift', 'abs_corr'], ascending=[1, 0, 1, 1])
     res = res.drop('abs_corr')
 
     #res = res.select('sym1', 'sym2', 'width', 'shift', 'p_corr')
@@ -256,6 +285,6 @@ if __name__=="__main__":
 
     res.show()
     res.rdd.map(lambda x: " ".join(map(str, x))).coalesce(1).saveAsTextFile(fo)
-    res.write.parquet("parquet_result")
+    res.coalesce(1).write.parquet("parquet_result")
 
     spark.stop()
