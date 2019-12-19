@@ -196,9 +196,6 @@ if __name__=="__main__":
     spark = SparkSession.builder\
         .appName("PythonCandle")\
         .config("spark.default.parallelism", num_reducers)\
-        .config("mapred.min.split.size", num_reducers)\
-        .config("mapred.max.split.size", num_reducers)\
-        .config("spark.sql.shuffle.partitions", num_reducers)\
         .getOrCreate()
 
     spark.sparkContext.setLogLevel('ERROR')
@@ -277,7 +274,7 @@ if __name__=="__main__":
     res = res.withColumn('abs_corr', F.abs(res.p_corr))
     res = res.withColumn('shift', F.abs(res.shift))
     res = res.withColumn('width', F.round(F.abs(res.width)/1e3).cast("int"))
-    res = res.sort(['sym1', 'width', 'shift', 'abs_corr'], ascending=[1, 0, 1, 1])
+    res = res.sort(['sym1', 'sym2', 'width', 'shift', 'abs_corr'], ascending=[1, 1, 0, 1, 1])
     res = res.drop('abs_corr')
 
     #res = res.select('sym1', 'sym2', 'width', 'shift', 'p_corr')
