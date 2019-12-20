@@ -267,8 +267,8 @@ if __name__=="__main__":
     data = data.flatMap(lambda x: ( (x[0].s1, x[0].s2, x[0].width, x[0].shift, x[1][0]),) ) #, x[1][1]), ) )
     #res = res.toDF(["sym1", "sym2", "p_corr"]).na.drop()
     schema = T.StructType([
-        T.StructField("sym1", T.StringType(), True),
-        T.StructField("sym2", T.StringType(), True),
+        T.StructField("sec1", T.StringType(), True),
+        T.StructField("sec2", T.StringType(), True),
         T.StructField("width", T.IntegerType(), True),
         T.StructField("shift", T.IntegerType(), True),
         T.StructField("p_corr", T.DoubleType(), True),
@@ -279,8 +279,10 @@ if __name__=="__main__":
     res = res.withColumn('abs_corr', F.abs(res.p_corr))
     res = res.withColumn('shift', F.abs(res.shift))
     res = res.withColumn('width', F.round(F.abs(res.width)/1e3).cast("int"))
-    res = res.sort(['sym1', 'sym2', 'width', 'shift', 'abs_corr'], ascending=[1, 1, 0, 1, 1])
+    res = res.sort(['sec1', 'sec2', 'width', 'shift', 'abs_corr'], ascending=[1, 1, 0, 1, 1])
     res = res.drop('abs_corr')
+    res = res.withColumn('corr', res.p_corr)
+    res = res.drop('p_corr')
 
     #res = res.select('sym1', 'sym2', 'width', 'shift', 'p_corr')
 
