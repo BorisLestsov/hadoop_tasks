@@ -137,7 +137,7 @@ def pearson_def(x, y):
     if xdiff2 == 0 or ydiff2 == 0:
         return None
 
-    return diffprod / math.sqrt(xdiff2 *  ydiff2)
+    return diffprod / math.sqrt(xdiff2 * ydiff2)
 
 def map_diff(x):
     key, val = x
@@ -147,6 +147,9 @@ def map_diff(x):
     val.sort(key=itemgetter(0))
     diffs1 = tuple( (val[i+1][1]-val[i][1])/val[i][1] for i in xrange(len(val)-1))
     diffs2 = tuple( (val[i+1][2]-val[i][2])/val[i][2] for i in xrange(len(val)-1))
+    if len(diffs1) <= 1:
+        res = (None, None)
+    return key, list(zip(diffs1, diffs2))
 
     if len(diffs1) <= 1:
         res = (None, None)
@@ -262,19 +265,25 @@ if __name__=="__main__":
 
 
     data = data.rdd.map(map_pairs)
-    data = data.groupByKey().map(map_diff)
+    data = data.groupByKey().map(map_diff).flatMapValues(lambda x: x)
+
     #data = data.flatMap(lambda x: ( (x[0].s1, x[0].s2, x[0].width, x[0].shift, x[1][0], x[1][1]), ))
-    data = data.flatMap(lambda x: ( (x[0].s1, x[0].s2, x[0].width, x[0].shift, x[1][0]),) ) #, x[1][1]), ) )
+    data = data.flatMap(lambda x: ( (x[0].s1, x[0].s2, x[0].width, x[0].shift, x[1][0], x[1][1]   ),) ) #, x[1][1]), ) )
+    print(data.first())
     #res = res.toDF(["sym1", "sym2", "p_corr"]).na.drop()
     schema = T.StructType([
         T.StructField("sym1", T.StringType(), True),
         T.StructField("sym2", T.StringType(), True),
         T.StructField("width", T.IntegerType(), True),
         T.StructField("shift", T.IntegerType(), True),
-        T.StructField("p_corr", T.DoubleType(), True),
+        T.StructField("d1", T.DoubleType(), True),
+        T.StructField("d2", T.DoubleType(), True),
         #T.StructField("len", T.IntegerType(), True),
         ])
     res = spark.createDataFrame(data, schema=schema).na.drop()
+    res.show()
+    res = res.groupby('sym1', 'sym2', 'width', 'shift').agg(F.corr("d1", 'd2').alias('p_corr'))
+    res.show()
 
     res = res.withColumn('abs_corr', F.abs(res.p_corr))
     res = res.withColumn('shift', F.abs(res.shift))
